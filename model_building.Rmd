@@ -1,277 +1,132 @@
 ---
-title: "Model Building"
-output: github_document
+title: "Diebold Model building"
+output: html_document
 ---
 
-```{r setup, include=F}
-knitr::opts_chunk$set(
-  fig.path = "markdown_figs/model_building-"
-)
-load("data/data_preparation.RData")
-```
+# Libraries required
 
 ```{r, message=FALSE}
 library(keras)
 library(dplyr)
 library(magrittr)
+library(caret)
+library(pROC)
 ```
 
-## 1. Spliting Dataset into Training and Test
+# Splitting the data into train, validation
 
 ```{r echo = F}
-# A function to partition the data
-create_data_partition <- function(dataset, train_size = 0.80) {
-  # Creates a value for dividing the data into train and test.
-  smp_size = dataset %>%
-    nrow() %>%
-    multiply_by(train_size) %>%
-    floor()
-  # Randomly identifies the rows equal to sample size from all the rows of dataset dataset
-  # and stores the row number in train_ind
-  return(dataset %>%
-           nrow() %>%
-           sample(x = seq_len(.), size = smp_size)
-  )
-}
-```
+set.seed(123)
+sample_train<- sample(seq_len(nrow(invoiced)), size = floor(0.60*nrow(invoiced)))
+sample_valid<- sample(seq_len(nrow(invoiced)), size = floor(0.20*nrow(invoiced)))
+sample_test <- sample(seq_len(nrow(invoiced)), size = floor(0.20*nrow(invoiced)))
 
-### For `Call Text`
-
-```{r}
-set.seed(2019)
-train_index_ct <- create_data_partition(call_text_data)
-x_train_ct <- call_text_data[train_index_ct,]
-x_val_ct <- call_text_data[-train_index_ct,]
-y_train_ct <- labels[train_index_ct]
-y_val_ct <- labels[-train_index_ct]
-```
-
-
-```{r}
-call_text_model <- keras_model_sequential() %>% 
-  layer_embedding(input_dim = CONSTANTS$MAX_WORDS, output_dim = 100, input_length = CONSTANTS$MAX_LEN) %>% 
-  layer_flatten() %>% 
-  layer_dense(units = 32, activation = "relu") %>% 
-  layer_dense(units = 1, activation = "sigmoid")
-summary(call_text_model)
 ```
 
 ```{r}
-call_text_model %>% compile(
-  optimizer = "rmsprop",
-  loss = "binary_crossentropy",
-  metrics = c("acc")
-)
-history <- call_text_model %>% fit(
-  x_train, y_train,
-  epochs = 10,
-  batch_size = 32,
-  validation_data = list(x_val, y_val)
-)
-```
-
-Let's plot the visualize the training and test metrics by epoch:
-
-```{r}
-plot(history)
+train_call_text <- free_form_call_text[sample_train, ] %>% as.array()
+val_call_text <- free_form_call_text[sample_valid, ] %>% as.array()
+test_call_text <- free_form_call_text[sample_test, ] %>% as.array()
+ dim(train_call_text)
+ dim(val_call_text)
+ dim(test_call_text)
 ```
 
 ```{r}
-classes <- call_text_model %>% predict_classes(x_val)
-Confusion.Matrix <- table(Actual = y_val, Predicted = classes)
-colnames(Confusion.Matrix) <- c("No", "Yes")
-rownames(Confusion.Matrix) <- c("No", "Yes")
-Confusion.Matrix
-```
-
-### For `Billing Notes`
-
-```{r}
-set.seed(2019)
-train_index_bn <- create_data_partition(billing_notes_data)
-x_train_bn <- billing_notes_data[train_index_bn,]
-x_val_bn <- billing_notes_data[-train_index_bn,]
-y_train_bn <- labels[train_index_bn]
-y_val_bn <- labels[-train_index_bn]
+train_billing_notes <- free_form_billing_notes[sample_train, ] %>% as.array()
+val_billing_notes <- free_form_billing_notes[sample_valid, ] %>% as.array()
+test_billing_notes <- free_form_billing_notes[sample_test, ] %>% as.array()
+dim(train_billing_notes)
+dim(val_billing_notes)
+dim(test_billing_notes)
 ```
 
 ```{r}
-billing_notes_model <- keras_model_sequential() %>% 
-  layer_embedding(input_dim = CONSTANTS$MAX_WORDS, output_dim = 100, input_length = CONSTANTS$MAX_LEN) %>% 
-  layer_flatten() %>% 
-  layer_dense(units = 32, activation = "relu") %>% 
-  layer_dense(units = 1, activation = "sigmoid")
-summary(billing_notes_model)
+train_categorical_data <- categorical_data[sample_train, ] %>% as.array()
+val_categorical_data <-  categorical_data[sample_valid, ] %>% as.array()
+test_categorical_data <- categorical_data[sample_test, ] %>% as.array()
+dim(train_categorical_data)
+dim(val_categorical_data)
+dim(test_categorical_data)
 ```
 
 ```{r}
-billing_notes_model %>% compile(
-  optimizer = "rmsprop",
-  loss = "binary_crossentropy",
-  metrics = c("acc")
-)
-history <- billing_notes_model %>% fit(
-  x_train, y_train,
-  epochs = 10,
-  batch_size = 32,
-  validation_data = list(x_val, y_val)
-)
+train_invoiced <- invoiced[sample_train, ] %>% as.array()
+val_invoiced <- invoiced[sample_valid, ] %>% as.array()
+test_invoiced <- invoiced[sample_test, ] %>% as.array()
 ```
 
+# Merging Multiple Inputs
+
 ```{r}
-plot(history)
+call_text_layer <- layer_input(shape = c(CONSTANTS$MAX_LEN), name = "call_text_layer")
+billing_notes_layer <- layer_input(shape = c(CONSTANTS$MAX_LEN),name = "billing_notes_layer")
+categorical_layer_model <- layer_input(shape = c(dim(categorical_data)[2]), name = 'categorica_layer_model')
 ```
 
+# Creating The Embedding layers
+
 ```{r}
-classes <- billing_notes_model %>% predict_classes(x_val)
-table(y_val,classes)
+call_text_embedding <- call_text_layer %>% layer_embedding(input_dim = CONSTANTS$MAX_WORDS, output_dim = 512, input_length = CONSTANTS$MAX_LEN, name = "call_text_embedding") %>% layer_dropout(0.6) %>% layer_flatten()
+billing_notes_embedding <- billing_notes_layer %>% layer_embedding(input_dim = CONSTANTS$MAX_WORDS,output_dim = 512,input_length = CONSTANTS$MAX_LEN, name = "billing_notes_embedding") %>% layer_dropout(0.6) %>% layer_flatten()
 ```
 
-###For Item Desc
+# Input and Auxilary Layers
 
 ```{r}
-set.seed(2019)
-train_index_item <- create_data_partition(item_desc_data)
-x_train_item <- item_desc_data[train_index_item,]
-x_val_item <- item_desc_data[-train_index_item,]
-y_train_item <- labels[train_index_item]
-y_val_item <- labels[-train_index_item]
-```
-
-```{r}
-item_desc_model <- keras_model_sequential() %>% 
-  layer_embedding(input_dim = CONSTANTS$MAX_WORDS, output_dim = 100, input_length = CONSTANTS$MAX_LEN) %>% 
-  layer_flatten() %>% 
-  layer_dense(units = 32, activation = "relu") %>% 
-  layer_dense(units = 1, activation = "sigmoid")
-summary(item_desc_model)
-```
-
-```{r}
-item_desc_model %>% compile(
-  optimizer = "rmsprop",
-  loss = "binary_crossentropy",
-  metrics = c("acc")
-)
-history <- item_desc_model %>% fit(
-  x_train, y_train,
-  epochs = 10,
-  batch_size = 32,
-  validation_data = list(x_val, y_val)
-)
-```
-
-```{r}
-plot(history)
-```
-
-```{r}
-classes <- item_desc_model %>% predict_classes(x_val)
-table(y_val,classes)
-```
-
-### SR Type
-
-```{r}
-set.seed(2019)
-train_index_type <- create_data_partition(type)
-x_train_type <- item_desc_data[train_index_type,]
-x_val_type <- item_desc_data[-train_index_type,]
-y_train_type <- labels[train_index_type]
-y_val_type <- labels[-train_index_type]
-```
-
-
-## 2. Merging the inputs
-
-### 2.1 Creating the input layers
-
-```{r}
-ct_input_layer <- layer_input(
-  shape = c(CONSTANTS$MAX_LEN),
-  dtype = "int32",
-  name = "input_layer_1"
-)
-bn_input_layer <- layer_input(
-  shape = c(CONSTANTS$MAX_LEN),
-  dtype = "int32",
-  name = "input_layer_2"
-)
-id_input_layer <- layer_input(
-  shape = c(CONSTANTS$MAX_LEN),
-  dtype = "int32",
-  name = "input_layer_3"
-)
-```
-
-
-### 2.2 Creating the Embedding layers
-
-```{r}
-ct_aux_out_layer <- ct_input_layer %>% 
-  layer_embedding(
-    input_dim = CONSTANTS$MAX_WORDS,
-    output_dim = 512, 
-    input_length = CONSTANTS$MAX_LEN) %>%
-  layer_lstm(units = 32) %>%
-  layer_dense(units = 1, activation = "sigmoid", name = "aux_output_1")
-  
-bn_aux_out_layer <- bn_input_layer %>% 
-  layer_embedding(
-    input_dim = CONSTANTS$MAX_WORDS,
-    output_dim = 512, 
-    input_length = CONSTANTS$MAX_LEN) %>%
-  layer_lstm(units = 32) %>% 
-  layer_dense(units = 1, activation = "sigmoid", name = "aux_output_2")
-id_aux_out_layer <- id_input_layer %>% 
-  layer_embedding(
-    input_dim = CONSTANTS$MAX_WORDS,
-    output_dim = 512, 
-    input_length = CONSTANTS$MAX_LEN) %>%
-  layer_lstm(units = 32) %>%
-  layer_dense(units = 1, activation = "sigmoid", name = "aux_output_3")
-```
-
-### 2.3 Merging Auxilary and Input Layers
-
-```{r}
-auxiliary_input <- layer_input(shape = c(5), name = 'aux_input')
-main_output <- layer_concatenate(c(ct_aux_out_layer, bn_aux_out_layer, id_aux_out_layer, auxiliary_input)) %>%  
-  layer_dense(units = 64, activation = 'relu') %>% 
-  layer_dense(units = 64, activation = 'relu') %>% 
-  layer_dense(units = 64, activation = 'relu') %>% 
+main_output <- layer_concatenate(c(call_text_embedding, billing_notes_embedding, categorical_layer_model)) %>%
+  layer_dense(units = 64, activation = 'relu', kernel_regularizer =  regularizer_l2(0.001)) %>%
+  layer_dense(units = 64, activation = 'relu', kernel_regularizer =  regularizer_l2(0.001)) %>%
+  layer_dense(units = 64, activation = 'relu', kernel_regularizer =  regularizer_l2(0.001)) %>%
   layer_dense(units = 1, activation = 'sigmoid', name = 'main_output')
 ```
 
+# Model Building
+
 ```{r}
-model <- keras_model(
-  inputs = c(ct_input_layer, bn_input_layer, id_input_layer, auxiliary_input), 
-  outputs = c(main_output, ct_aux_out_layer, bn_aux_out_layer, id_aux_out_layer)
-)
+model <- keras_model(inputs = c(call_text_layer, billing_notes_layer, categorical_layer_model), outputs = main_output)
 ```
 
-
 ```{r}
+model %>% compile(optimizer = 'rmsprop', loss = 'binary_crossentropy',metric = 'accuracy')
 summary(model)
 ```
 
+
 ```{r}
-model %>% compile(
-  optimizer = 'rmsprop',
-  loss = 'binary_crossentropy',
-  loss_weights = c(0.2, 1.0, 0.2, 0.2)
-)
+history_model <- model %>% fit(x = list(train_call_text, train_billing_notes, train_categorical_data), y = train_invoiced, epochs = 5, batch_size = 128, validation_data = list(list(val_call_text, val_billing_notes, val_categorical_data),val_invoiced))
 ```
 
 ```{r}
-history <- model %>% fit(
-  x = list(billing_notes_data, call_text_data, item_desc_data, type),
-  y = list(labels, labels, labels, labels),
-  epochs = 10,
-  batch_size = 20
-)
+plot(history_model)
 ```
 
+
+# Testing the accuracy of the model on the test set
+
+```{r echo = T, results = 'hide'}
+result <- model %>% evaluate(list(test_call_text, test_billing_notes, test_categorical_data), test_invoiced)
+result$loss
+result$acc
+```
+
+# Model ROC 
+
 ```{r}
-plot(history)
+probability <- predict(model, list(test_call_text, test_billing_notes, test_categorical_data), batch_size = 128)
+roc <- roc(test_invoiced, as.vector(probability))
+roc
+```
+
+# Model AUC 
+
+```{r}
+plot(roc, col='green')
+```
+
+# Confusion matrix
+
+```{r}
+class_prediction <- as.numeric(probability > .30) %>% as.factor()
+confusionMatrix(class_prediction, as.factor(test_invoiced), mode = "prec_recall")
 ```
