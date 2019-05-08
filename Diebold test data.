@@ -1,0 +1,183 @@
+---
+title: "Diebold Test"
+output: html_document
+---
+
+# Libraries required
+
+```{r, message=FALSE}
+library(readxl)
+library(dplyr)
+library(magrittr)
+library(tm)
+library(keras)
+library(caret)
+library(SnowballC)
+library(reshape2)
+```
+
+# Loading the test data 
+## Trying to encode specific types of values to NA 
+
+```{r, warning=FALSE, message=FALSE}
+diebold_test<- read_excel("February_Test_Date_Corrected.xlsx", na = c("", "---"), col_types = "text")
+```
+
+# Data Preparation
+## Removing the variables that were not important, based on the initial discussions and research into the data set.
+
+```{r}
+unimportant_variables <- c("SR Address Line 1", "SR City", "SR Status", "Activity Status", "Charges Status", "SR Coverage Hours...11", "SR Coverage Hours...29","SR Contact Date","Br Area Desc", "Activity Facts Call Num","Activity Completed Date", "Item Desc", "SR Site","SR Serial Number", "Base Call YN", "Br Region Desc", "Tech Name", "SR Number","Br Branch Desc")
+unimportant_variables
+```
+
+```{r}
+diebold_test <- diebold_test %>% select(-c(unimportant_variables))
+```
+
+## Assigning the value "0" to NA values
+
+```{r}
+diebold_test[is.na(diebold_test)] <- 0 
+```
+
+```{r}
+colnames(diebold_test)
+```
+# Data Cleaning
+
+## Encoding the categorical variables as factors
+
+```{r echo=FALSE}
+characters_test <- c("Invoiced (Y/N)",  "Activity Type", "Activity Trouble Code", "Coverage Type", "SR Type", "SR Device","SR Owner (Q#)","Cash Vendor & Consumable Contracts", "SR State")
+characters_test
+```
+
+```{r}
+diebold_test <- diebold_test %>% mutate_at(characters_test, factor)
+```
+
+# "Billing Notes" and "Call Text" are the two variables in our data set that are free Form Text
+
+```{r}
+diebold_test_call_text <-  use_series(diebold_test, `Call Text`)
+diebold_test_billing_notes <-  use_series(diebold_test, `Billing Notes`)
+```
+
+```{r}
+diebold_test_call_text_corpus <- VCorpus(VectorSource(diebold_test_call_text), readerControl = list(language = "en"))
+diebold_test_bill_notes_corpus <- VCorpus(VectorSource(diebold_test_billing_notes), readerControl = list(language = "en"))
+```
+
+## Free form text - Data Cleaning
+
+```{r}
+replace_asterix <- function(document) {gsub(pattern = "\\*", replacement = " ", document)}
+add_space_period <- function(document) {gsub(pattern = "\\.", replacement = ". ", document)}
+remove_single_chars <- function(document) {gsub(pattern = "\\s[a-z]\\s", replacement = " ", document)}
+clean_text <- function(corpus) {corpus %>% tm_map(content_transformer(tolower)) %>% tm_map(content_transformer(replace_asterix)) %>% tm_map(content_transformer(add_space_period)) %>% tm_map(removeNumbers) %>% tm_map(removeWords, stopwords("english")) %>% tm_map(removeWords, c("pm", "am", "edt")) %>% tm_map(removePunctuation) %>% tm_map(content_transformer(remove_single_chars)) %>% tm_map(stripWhitespace) %>% tm_map(content_transformer(trimws)) %>% tm_map(stemDocument)}
+diebold_test_call_text_cleaned <- clean_text(diebold_test_call_text_corpus)
+diebold_test_bill_notes_cleaned <- clean_text(diebold_test_bill_notes_corpus)
+```
+
+```{r}
+diebold_test$`Call Text` <- diebold_test_call_text_cleaned %>% sapply(function (doc) doc$content)
+diebold_test$`Billing Notes` <- diebold_test_bill_notes_cleaned %>% sapply(function (doc) doc$content)
+```
+
+# Target variable - Data preparation
+
+```{r}
+invoiced_test <- diebold_test %>%
+  use_series("Invoiced (Y/N)") %>%
+  as.numeric() %>%
+  subtract(1) %>%
+  as.matrix()
+dim(invoiced_test)
+```
+
+# Tokenization
+
+```{r}
+CONSTANTS <- list(
+  MAX_WORDS = 20000,
+  MAX_LEN = 200
+)
+```
+
+## Tokeninzing Categorical data
+
+## Tokeninzing Categorical data
+
+```{r}
+categ_to_tokenize_test <- c("Invoiced (Y/N)", "Activity Type", "Activity Trouble Code", "Coverage Type", "SR Type", "SR Device", "SR Owner (Q#)", "Cash Vendor & Consumable Contracts", "SR State")
+categoricals_test <- diebold_test %>%select(categ_to_tokenize_test[-1]) %>% mutate_all(addNA)
+```
+
+
+#### Dimension
+
+```{r one-hot-encoding}
+categorical_model_test <- dummyVars(" ~ .", data = categoricals_test, fullRank = T)
+categorical_data_test <- data.matrix(predict(categorical_model_test, newdata = categoricals_test))
+padded_categorical <- cbind(categorical_data_test, matrix(0, nrow = 108873, ncol = 19))
+dim(padded_categorical)
+```
+
+
+## Tokenizing the free Form Text
+
+### Call Text
+
+```{r}
+test_call_text <- diebold_test %>% select(c("Call Text"))
+tokenizer <- text_tokenizer(num_words = CONSTANTS$MAX_WORDS) %>% 
+fit_text_tokenizer(test_call_text$`Call Text`)
+sequences <- texts_to_sequences(tokenizer, test_call_text$`Call Text`)
+```
+
+#### Unique tokens
+
+```{r}
+word_index <- tokenizer$word_index
+ length(word_index)
+```
+
+#### Dimension
+
+```{r}
+test_free_form_call_text <- pad_sequences(sequences, maxlen = CONSTANTS$MAX_LEN)
+ dim(test_free_form_call_text)
+```
+
+### Billing Notes
+
+```{r}
+test_billing_notes <- diebold_test %>% select("Billing Notes")
+tokenizer <- text_tokenizer(num_words = CONSTANTS$MAX_WORDS) %>% 
+fit_text_tokenizer(test_billing_notes$`Billing Notes`)
+sequences <- texts_to_sequences(tokenizer, test_billing_notes$`Billing Notes`)
+```
+
+#### Unique tokens
+
+```{r}
+word_index <- tokenizer$word_index
+ length(word_index)
+```
+
+#### dimension
+
+```{r}
+test_free_form_billing_notes <- pad_sequences(sequences, maxlen = CONSTANTS$MAX_LEN)
+dim(test_free_form_billing_notes)
+```
+
+# Training Model on February Test Data
+
+```{r}
+probability_feb_test <- predict(model, list(test_free_form_billing_notes, test_free_form_call_text,padded_categorical),batch_size = 128)
+class_prediction_feb <- as.numeric(probability_feb_test >= .30) %>% as.factor() %>% as.data.frame()
+colnames(class_prediction_feb) <- c("Invoiced (Y/N)")
+write.csv(class_prediction_feb, file = "Diebold_prediction_file.csv", row.names = F)
+```
